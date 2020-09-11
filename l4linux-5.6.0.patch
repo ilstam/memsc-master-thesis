@@ -1,0 +1,363 @@
+diff --git a/Makefile b/Makefile
+index f72bd88707ac..b78c0266eb8d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1016,7 +1016,7 @@ export MODORDER := $(extmod-prefix)modules.order
+ export MODULES_NSDEPS := $(extmod-prefix)modules.nsdeps
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ memsc/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/arch/arm/tools/syscall.tbl b/arch/arm/tools/syscall.tbl
+index 4d1cf74a2caa..44623d4c691f 100644
+--- a/arch/arm/tools/syscall.tbl
++++ b/arch/arm/tools/syscall.tbl
+@@ -451,3 +451,4 @@
+ 435	common	clone3				sys_clone3
+ 437	common	openat2				sys_openat2
+ 438	common	pidfd_getfd			sys_pidfd_getfd
++439	common	memsc_register			sys_memsc_register
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 04278493bf15..c3667ac3123f 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1281,6 +1281,8 @@ struct task_struct {
+ 	unsigned long			prev_lowest_stack;
+ #endif
+ 
++	struct memsc_syspage            *syspage;
++
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+ 	 * they are included in the randomized portion of task_struct.
+diff --git a/include/memsc/memsc.h b/include/memsc/memsc.h
+new file mode 100644
+index 000000000000..ad28e4d29ffd
+--- /dev/null
++++ b/include/memsc/memsc.h
+@@ -0,0 +1,8 @@
++#ifndef _MEMSC_H
++#define _MEMSC_H
++
++#include <uapi/memsc/memsc.h>
++
++void exit_memsc(struct task_struct *p);
++
++#endif /* _MEMMC_H */
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 3a3201e4618e..21c558310491 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -856,8 +856,11 @@ __SYSCALL(__NR_openat2, sys_openat2)
+ #define __NR_pidfd_getfd 438
+ __SYSCALL(__NR_pidfd_getfd, sys_pidfd_getfd)
+ 
++#define __NR_memsc_register 439
++__SYSCALL(__NR_memsc_register, sys_memsc_register)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 439
++#define __NR_syscalls 440
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/include/uapi/memsc/memsc.h b/include/uapi/memsc/memsc.h
+new file mode 100644
+index 000000000000..e0d77db9bb94
+--- /dev/null
++++ b/include/uapi/memsc/memsc.h
+@@ -0,0 +1,38 @@
++#ifndef _UAPI_MEMSC_H
++#define _UAPI_MEMSC_H
++
++typedef enum {
++	MEMSC_STATUS_FREE = 0,
++	MEMSC_STATUS_SUBMITTED,
++	MEMSC_STATUS_DONE,
++} memsc_status;
++
++/*
++ * Ideally we would use ____cacheline_aligned for the alignment of
++ * memsc_sysentry. However, this wouldn't be propagated to the userspace which
++ * also shares this definition and we could end up with different struct
++ * paddings in user space than in kernel space. For this reason we hard-code
++ * the value 64 which is the most commonly used cache line size in most
++ * architectures. This ensures that each entry resides in its own cache line.
++ */
++struct memsc_sysentry {
++	memsc_status status;
++	unsigned sysnum;
++	long sysret;
++	long args[6];
++} __attribute__((__aligned__(64)));
++
++
++enum {
++	MEMSC_REG_WAIT = 0,
++	MEMSC_REG_DONE = 1,
++};
++
++enum {
++	MEMSC_ERR_ALREADY_REG = 100,
++	MEMSC_ERR_INVALID_PTR,
++	MEMSC_ERR_PTR_NOT_ALIGNED,
++	MEMSC_ERR_SPAWN_SCANNER,
++};
++
++#endif /* _UAPI_MEMMC_H */
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 0b81b26a872a..2403de03045c 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -69,6 +69,8 @@
+ #include <asm/pgtable.h>
+ #include <asm/mmu_context.h>
+ 
++#include <memsc/memsc.h>
++
+ static void __unhash_process(struct task_struct *p, bool group_dead)
+ {
+ 	nr_threads--;
+@@ -747,6 +749,8 @@ void __noreturn do_exit(long code)
+ 		schedule();
+ 	}
+ 
++	exit_memsc(tsk);
++
+ 	exit_signals(tsk);  /* sets PF_EXITING */
+ 
+ 	if (unlikely(in_atomic())) {
+diff --git a/kernel/fork.c b/kernel/fork.c
+index d90af13431c7..826c3a1435c9 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2047,6 +2047,8 @@ static __latent_entropy struct task_struct *copy_process(
+ 	p->sequential_io_avg	= 0;
+ #endif
+ 
++	p->syspage = NULL;
++
+ 	/* Perform scheduler related setup. Assign this task to a CPU. */
+ 	retval = sched_fork(clone_flags, p);
+ 	if (retval)
+diff --git a/memsc/Makefile b/memsc/Makefile
+new file mode 100644
+index 000000000000..6b631f00f025
+--- /dev/null
++++ b/memsc/Makefile
+@@ -0,0 +1 @@
++obj-y := memsc.o
+diff --git a/memsc/memsc.c b/memsc/memsc.c
+new file mode 100644
+index 000000000000..985b3266e7ba
+--- /dev/null
++++ b/memsc/memsc.c
+@@ -0,0 +1,205 @@
++#include <linux/syscalls.h>
++#include <linux/highmem.h>
++#include <linux/slab.h>
++
++#include <asm/l4x/lx_syscalls.h>
++#include <memsc/memsc.h>
++
++
++#define SCANNER_CPU 1
++#define MEMSC_MAX_ENTRIES (PAGE_SIZE / sizeof(struct memsc_sysentry))
++
++
++struct memsc_syspage {
++	struct list_head list;
++
++	struct page *page_struct;     /* the physical page */
++	struct memsc_sysentry *addr;  /* kernel mapping of the syspage */
++	struct task_struct *worker;   /* worker thread for that syspage */
++	struct memsc_sysentry *next;  /* ring buffer head entry */
++};
++
++
++static DEFINE_SPINLOCK(syspage_list_lock);
++static LIST_HEAD(syspage_list);
++
++/*
++ * For now the scanner is started once and stays on forever, even when all
++ * memsc processes complete. The scanner_on variable serves as an atomic flag.
++ * In the future, proper reference counting should be implemented and the
++ * scanner thread must be shut down when no processes are registered for memsc.
++ */
++static long unsigned scanner_on = 0;
++static struct task_struct *scanner_thread;
++
++
++#if defined(ARCH_arm)
++
++static long memsc_dispatch(struct memsc_sysentry *e) {
++	return sys_call_table[e->sysnum](e->args[0], e->args[1], e->args[2],
++	                                 e->args[3], e->args[4], e->args[5]);
++}
++
++#elif defined(ARCH_arm64)
++
++static long memsc_dispatch(struct memsc_sysentry *e) {
++	struct pt_regs regs = {0};
++	memcpy(regs.regs, e->args, sizeof(regs.regs[0]) * 6);
++
++	return sys_call_table[e->sysnum](&regs);
++}
++
++#endif
++
++
++/*
++ * This is the function that the scanner thread executes.
++ * It constantly iterates over all registered syspages and wakes up the
++ * appropriate worker threads once it detects new entries.
++ */
++static int memsc_scan(void *data __attribute__((unused)))
++{
++	struct memsc_syspage *sysp;
++
++	/* don't allow anything else to be scheduled in this vCPU */
++	preempt_disable();
++
++	while (1) {
++		if (kthread_should_stop()) {
++			pr_info("memsc: scanner thread exited\n");
++			preempt_enable();
++			return 0;
++		}
++
++		spin_lock(&syspage_list_lock);
++
++		list_for_each_entry(sysp, &syspage_list, list) {
++			if (sysp->next->status == MEMSC_STATUS_SUBMITTED) {
++				/* wake_up_process won't call schedule() */
++				wake_up_process(sysp->worker);
++			}
++		}
++
++		spin_unlock(&syspage_list_lock);
++	}
++}
++
++
++/*
++ * This is where a worker thread does its main work.
++ * After checking the ring buffer head it either dispatches the call if it
++ * encounters a newly submitted entry or otherwise goes to sleep.
++ */
++static void memsc_do_work(struct memsc_syspage *p)
++{
++	while (1) {
++		/* sleep until the scanner wakes us or we receive a fatal signal */
++		set_current_state(TASK_KILLABLE);
++		schedule();
++
++		if (signal_pending(current))
++			return;
++
++		while (smp_load_acquire(&p->next->status) == MEMSC_STATUS_SUBMITTED) {
++			/* copy the entry to the kernel stack to avoid TOCTOU attacks */
++			struct memsc_sysentry entry = *p->next;
++
++			p->next->sysret = -ENOSYS;
++			if (likely(entry.sysnum < __NR_syscalls))
++				p->next->sysret = memsc_dispatch(&entry);
++
++			/* status must become visible after sysret */
++			smp_store_release(&p->next->status, MEMSC_STATUS_DONE);
++
++			/* increment and wrap around if needed */
++			if (++p->next == p->addr + MEMSC_MAX_ENTRIES)
++				p->next = p->addr;
++		}
++	}
++}
++
++
++/*
++ * This system call converts a user thread to a memsc worker.
++ * It expects a user pointer to a memory page allocated in user-space that will
++ * be used as the syspage. If there is no scanner thread running it creates and
++ * starts a new one. This system call only returns back to user space when the
++ * process receives a fatal signal.
++ */
++SYSCALL_DEFINE1(memsc_register, unsigned long __user, syspage_addr)
++{
++	struct page *ph_pages[1];
++	struct memsc_syspage *sysp;
++
++	if (current->group_leader->syspage)
++		return -MEMSC_ERR_ALREADY_REG;
++
++	if (syspage_addr % PAGE_SIZE != 0)
++		return -MEMSC_ERR_PTR_NOT_ALIGNED;
++
++	sysp = kmalloc(sizeof(struct memsc_syspage), GFP_KERNEL);
++	if (!sysp)
++		return -ENOMEM;
++
++	/* locate the physical page and pin it in memory */
++	if (get_user_pages_fast(syspage_addr, 1, FOLL_WRITE, ph_pages) != 1)
++		return -MEMSC_ERR_INVALID_PTR;
++
++	/* On native Linux, kmap will create a new kernel mapping for the syspage.
++	 * On L4Linux a mapping already exists so kmap will simply return it. */
++	sysp->addr = kmap(ph_pages[0]);
++
++	sysp->page_struct = ph_pages[0];
++	sysp->worker = current;
++	sysp->next = sysp->addr;
++	INIT_LIST_HEAD(&sysp->list);
++
++	/* add the new page to the list of pages that the scanner is polling */
++	spin_lock(&syspage_list_lock);
++	list_add_tail(&sysp->list, &syspage_list);
++	spin_unlock(&syspage_list_lock);
++
++	/* let the thread group leader have a reference of the syspage */
++	current->group_leader->syspage = sysp;
++
++	/* start the scanner thread if it is not already running */
++	if (!test_and_set_bit(0, &scanner_on)) {
++		scanner_thread = kthread_create(memsc_scan, NULL, "memsc_scanner");
++		if (IS_ERR(scanner_thread))
++			return -MEMSC_ERR_SPAWN_SCANNER;
++
++		/* bind the scanner thread on its dedicated vCPU */
++		kthread_bind(scanner_thread, SCANNER_CPU);
++		wake_up_process(scanner_thread);
++
++		pr_info("memsc: scanner thread started\n");
++	}
++
++	/* notify the user-space that registration is complete */
++	sysp->addr->sysret = MEMSC_REG_DONE;
++
++	memsc_do_work(sysp);
++
++	return 0;
++}
++
++
++/*
++ * This function is called from do_exit() by all system threads when dying.
++ * When called by a memsc worker it frees its corresponding syspage.
++ */
++void exit_memsc(struct task_struct *p)
++{
++	struct memsc_syspage *sysp = p->group_leader->syspage;
++
++	if (likely(!sysp || p != sysp->worker))
++		return;
++
++	spin_lock(&syspage_list_lock);
++	list_del(&sysp->list);
++	spin_unlock(&syspage_list_lock);
++
++	kunmap(sysp->page_struct);
++	put_page(sysp->page_struct);
++	kfree(sysp);
++}

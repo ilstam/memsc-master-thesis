@@ -1,0 +1,127 @@
+diff --git a/Rules.mak b/Rules.mak
+index 7f83b46..93579e7 100644
+--- a/Rules.mak
++++ b/Rules.mak
+@@ -605,7 +605,9 @@ CFLAGS := $(XWARNINGS) $(CPU_CFLAGS) $(SSP_CFLAGS) \
+ 	-I$(top_srcdir)libc/sysdeps/linux/$(TARGET_ARCH) \
+ 	-I$(top_srcdir)libc/sysdeps/linux \
+ 	-I$(top_srcdir)ldso/ldso/$(TARGET_ARCH) \
+-	-I$(top_srcdir)ldso/include -I.
++	-I$(top_srcdir)ldso/include \
++	-I/home/ilstam/memsclib/ \
++	-I.
+ 
+ # We need this to be checked within libc-symbols.h
+ ifneq ($(HAVE_SHARED),y)
+@@ -638,6 +640,8 @@ LDFLAGS_NOSTRIP += $(CFLAG_-Wl--hash-style=gnu)
+ endif
+ endif
+ 
++LIBS-ld-uClibc.so += -L/home/ilstam/memsclib/ -lmemsc
++
+ ifeq ($(DODEBUG),y)
+ CFLAGS += -O0 -g3 -DDEBUG
+ else
+diff --git a/ldso/ldso/ldso.c b/ldso/ldso/ldso.c
+index b335476..9df738e 100644
+--- a/ldso/ldso/ldso.c
++++ b/ldso/ldso/ldso.c
+@@ -44,6 +44,8 @@
+ /* Pull in the value of _dl_progname */
+ #include LDSO_ELFINTERP
+ 
++int memsc_registered = 0;
++
+ /* Global variables used within the shared library loader */
+ #ifdef __LDSO_LD_LIBRARY_PATH__
+ char *_dl_library_path         = NULL;	/* Where we look for libraries */
+diff --git a/libc/Makefile.in b/libc/Makefile.in
+index b9f6b59..5b7ad28 100644
+--- a/libc/Makefile.in
++++ b/libc/Makefile.in
+@@ -19,6 +19,7 @@ CFLAGS-libc :=# intentionally left blank
+ LDFLAGS-$(UCLIBC_FORMAT_DSBT_ELF)-libc.so := -Wl,--dsbt-index=2
+ LDFLAGS-libc.so := $(LDFLAGS) $(VERSION_SCRIPT) -Wl,-init,$(SYMBOL_PREFIX)__uClibc_init
+ LIBS-libc.so := $(interp) $(ldso) $(top_builddir)lib/$(NONSHARED_LIBNAME) $(top_builddir)lib/$(NONSHARED_LIBPTHREAD)
++LIBS-libc.so += /home/ilstam/memsclib/libmemsc.so
+ 
+ # we have SHARED_LIBNAME=libc.so.$(ABI_VERSION) defined in Rules.mak
+ libc_FULL_NAME := libuClibc-$(VERSION).so
+diff --git a/libc/misc/internals/__uClibc_main.c b/libc/misc/internals/__uClibc_main.c
+index affa0ce..616ec9f 100644
+--- a/libc/misc/internals/__uClibc_main.c
++++ b/libc/misc/internals/__uClibc_main.c
+@@ -39,6 +39,9 @@
+ #ifdef __UCLIBC_HAS_LOCALE__
+ #include <locale.h>
+ #endif
++#include "memsclib.h"
++
++int memsc_registered = 0;
+ 
+ /* Are we in a secure process environment or are we dealing
+  * with setuid stuff?  If we are dynamically linked, then we
+@@ -502,6 +505,11 @@ void __uClibc_main(int (*main)(int, char **, char **), int argc,
+ # endif
+ #endif
+ 
++    if (memsc_register() == 0)
++        memsc_registered = 1;
++    else
++        puts("__uClibc_main: memsc_register failed");
++
+     /* Note: It is possible that any initialization done above could
+      * have resulted in errno being set nonzero, so set it to 0 before
+      * we call main.
+diff --git a/libc/sysdeps/linux/common/bits/syscalls-common.h b/libc/sysdeps/linux/common/bits/syscalls-common.h
+index 3665345..59e5889 100644
+--- a/libc/sysdeps/linux/common/bits/syscalls-common.h
++++ b/libc/sysdeps/linux/common/bits/syscalls-common.h
+@@ -94,14 +94,41 @@
+ #define C_ARGS_5(t, v, args...)		v, C_ARGS_4(args)
+ #define C_ARGS_6(t, v, args...)		v, C_ARGS_5(args)
+ 
+-#define SYSCALL_FUNC(nargs, type, name, args...)			\
+-type name(C_DECL_ARGS_##nargs(args)) {					\
+-	return (type)INLINE_SYSCALL(name, nargs, C_ARGS_##nargs(args));	\
++#include "memsclib.h"
++
++extern int memsc_registered;
++
++#define MEMSC_CALL_0(name, args...)     memsc_add(__NR_##name);
++#define MEMSC_CALL_1(name, args...)     memsc_add(__NR_##name, args);
++#define MEMSC_CALL_2(name, args...)     memsc_add(__NR_##name, args);
++#define MEMSC_CALL_3(name, args...)     memsc_add(__NR_##name, args);
++#define MEMSC_CALL_4(name, args...)     memsc_add(__NR_##name, args);
++#define MEMSC_CALL_5(name, args...)     memsc_add(__NR_##name, args);
++#define MEMSC_CALL_6(name, args...)     memsc_add(__NR_##name, args);
++
++#define SYSCALL_FUNC(nargs, type, name, args...)                                 \
++type name(C_DECL_ARGS_##nargs(args)) {                                           \
++        if (memsc_registered) {                                                  \
++                memsc_idx idx = MEMSC_CALL_##nargs(name, C_ARGS_##nargs(args));  \
++                memsc_wait_all();                                                \
++                long result = memsc_retval(idx);                                 \
++                if (unlikely (INTERNAL_SYSCALL_ERROR_P (result, ))) {            \
++                        __set_errno (INTERNAL_SYSCALL_ERRNO (result, ));         \
++                        result = (unsigned int) -1;                              \
++                }                                                                \
++                return (type) result;                                            \
++        }                                                                        \
++        return (type)INLINE_SYSCALL(name, nargs, C_ARGS_##nargs(args));          \
+ }
+ 
+-#define SYSCALL_NOERR_FUNC(nargs, type, name, args...)			\
+-type name(C_DECL_ARGS_##nargs(args)) {					\
+-	return (type)INLINE_SYSCALL_NOERR(name, nargs, C_ARGS_##nargs(args));	\
++#define SYSCALL_NOERR_FUNC(nargs, type, name, args...)                           \
++type name(C_DECL_ARGS_##nargs(args)) {                                           \
++        if (memsc_registered) {                                                  \
++                memsc_idx idx = MEMSC_CALL_##nargs(name, C_ARGS_##nargs(args));  \
++                memsc_wait_all();                                                \
++                return (type) memsc_retval(idx);                                 \
++        }                                                                        \
++        return (type)INLINE_SYSCALL_NOERR(name, nargs, C_ARGS_##nargs(args));    \
+ }
+ 
+ #define _syscall0(args...)		SYSCALL_FUNC(0, args)
