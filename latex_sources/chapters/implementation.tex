@@ -1,0 +1,461 @@
+\chapter{Implementation}
+\label{chap:implementation}
+
+This chapter discusses a few interesting aspects of the \memsc implementation
+such as establishing shared memory between the user and kernel space, spawning
+kernel threads, polling memory, and synchronizing accesses to the syspages.
+
+\section{Supported Architectures}
+
+Memsc has been implemented for the arm and aarch64\footnote{arm's 64-bit
+extension} architectures. Nonetheless, porting \memsc to other architectures
+should be straightforward and require trivial effort. Specifically, only a
+single function needs to be ported. This short function, after extracting the
+system call arguments from the \sysp, it dispatches the call using the system
+call table corresponding to that CPU architecture. Additionally, the new
+\emph{memsc\_register} system call needs to be appended to that same table.
+
+Arm architecture's weak memory model introduces a few challenges related to
+memory polling and synchronization which are discussed in section
+\ref{sec:sync}.
+
+\section{Establishing Shared Memory Between User-Space and Kernel-Space}
+
+A \sysp is simply a memory page shared by the kernel and a detached user thread
+that has registered for \memsc services. The kernel and the user thread can
+both read and modify its contents. Accessing the \sysp is done on both sides by
+simply dereferencing a pointer they hold to it. This memory can either be
+allocated in kernel-space using \emph{kmalloc} or a similar kernel function, or
+it can be allocated in user-space using one of the memory allocator interfaces
+offered by the C library.
+
+In case the memory is allocated from within the kernel, then the appropriate
+mappings must be established in the page tables of the user process. In general
+this is possible by providing a custom \emph{mmap} implementation that maps the
+pages when page faults are generated. Chapter 15 of the LDD book \cite{ldd}
+explains exactly how this is done and provides the reader with example code.
+Doing the opposite, allocating the memory in user-space and passing a reference
+to it to the kernel, appeared to be simpler and is the approach used in \memsc.
+To understand why it is simpler, we first need to understand how memory is
+organized in \llinux.
+
+In \llinux the kernel runs on a separate address space than user processes.
+That means that a user pointer that is valid in the address space of a process
+is not valid when the kernel is scheduled. However, the kernel address space
+contains mappings for all memory belonging to user processes. The same physical
+pages are simply mapped in different locations in different address spaces.
+Therefore, if \llinux receives a user-space address it doesn't need to create a
+new kernel mapping for that memory since it already has one.
+
+This is different from native Linux where both kernel-space mappings and
+user-space mappings exist in the address space of all processes\footnotemark.
+The kernel doesn't have an address space of its own. Unlike \llinux, when the
+kernel needs temporary kernel mappings for user memory it has to create them.
+
+\footnotetext{Native Linux also uses separate page tables in user mode and
+kernel mode when the Kernel Page Table Isolation (KPTI) feature is enabled.
+KPTI is used as a mitigation against the Meltdown security vulnerability.}
+
+Establishing a shared communication channel between the user-space and the
+kernel in \memsc works as follows. The user-space allocates one page's worth of
+memory using the \emph{aligned\_alloc()} library function. This function makes
+sure that the memory is allocated on a page boundary. This is important as it
+prevents the \sysp from being physically split across two memory pages. The
+user-space then passes the address of the newly allocated page to the kernel as
+an argument to the \emph{memsc\_register()} system call.
+
+Once the kernel receives the user-space pointer, it passes it to the
+\emph{get\_user\_pages()} kernel function. This function does two things.
+First, it walks the page tables of the corresponding user process and returns a
+reference to the physical memory page to which the user address belongs.
+Second, it makes sure that this page remains pinned in main memory and it
+doesn't get swapped out.
+
+At this point the kernel already knows which physical page corresponds to the
+\sysp for that process but it doesn't know how to refer to it. To get a working
+kernel pointer for it, it needs to use the \emph{kmap()} function. Even though
+in native Linux \emph{kmap} would create a new kernel mapping as previously
+explained, in \llinux it simply returns the existing mapping since it has
+already been established.
+
+\begin{figure}[h]
+    \begin{lstlisting}[language=C]
+SYSCALL_DEFINE1(memsc_register, unsigned long __user, syspage_addr)
+{
+	struct page *ph_pages[1];
+	void *sysp_addr;
+
+	...
+
+	if (syspage_addr % PAGE_SIZE != 0)
+		return -MEMSC_ERR_PTR_NOT_ALIGNED;
+
+	/* locate the physical page and pin it in memory */
+	if (get_user_pages_fast(syspage_addr, 1, FOLL_WRITE, ph_pages) != 1)
+		return -MEMSC_ERR_INVALID_PTR;
+
+	/* find the existing mapping for the syspage in the kernel's address space */
+	sysp_addr = kmap(ph_pages[0]);
+
+	...
+
+    \end{lstlisting}
+    \caption{Kernel code for obtaining a valid pointer to the \sysp whose
+    address is passed from the user-space}
+    \label{fig:syspage mapping}
+\end{figure}
+
+From that point on, the kernel can directly manipulate the \sysp by simply
+dereferencing the pointer returned from \emph{kmap}. Figure \ref{fig:syspage
+mapping} shows the kernel code used in \memsc for achieving the desired result
+using the previously mentioned functions.
+
+\section{Spawning \memsc Workers}
+
+Worker threads do the main part of the work in \memsc. At the end of the day,
+they are the ones executing the system calls code. However, deciding how to
+create these threads, manage their lifetime, and make sure they can access the
+appropriate data was not straightforward.
+
+\subsection{Challenges with Spawning Kernel Threads}
+
+As explained in section \ref{section:workers}, \memsc worker threads are
+threads that service system calls for their associated user process by
+executing in the same context (i.e. being able to access the same memory) as
+that process. Nevertheless, these threads are expected to execute in
+kernel-space during their lifetime. An intuitive solution for this would be to
+spawn new kernel threads from within the kernel. However it turns out that this
+is not that easy.
+
+On native Linux, a kernel thread is defined as a thread that only ever executes
+in kernel-space and is not supposed to touch user memory
+\cite{love}\cite{bovet}. Kernel threads can be spawned by calling either
+\emph{kernel\_thread()} or \emph{kthread\_create()}.
+
+\emph{kernel\_thread()} is simply a direct wrapper for \emph{do\_fork()} which
+is the function used to create all threads/processes, user and kernel. By
+passing the appropriate clone flags to \emph{kernel\_thread()} or
+\emph{do\_fork()}, the caller can control what parts of the parent thread's
+address space and process descriptor the new thread will share.
+
+That seems convenient for creating \memsc workers and indeed it could work with
+older kernels. However, in newer kernels a user thread cannot create new kernel
+threads even when running in kernel-space (e.g. executing a system call)
+\cite{mail_list}. Only existing kernel threads can create new threads using
+\emph{kernel\_thread()}. Hence, it is not possible to call
+\emph{kernel\_thread()} from within a system call such as
+\emph{memsc\_register()} in our case.
+
+The other function for creating kernel threads is \emph{kthread\_create()}.
+Even though \emph{kthread\_create()} can be called from a non-kernel thread (ie
+a user thread currently executing in kernel mode), it does not allow for the
+caller to specify any clone flags. Therefore, it is not possible to control
+exactly what is being shared between the calling and the resulting thread.
+
+Additionally, to be able to successfully execute all system calls on behalf of
+another process, just sharing its address space would not be sufficient for a
+\memsc worker. It would as well need to share other information stored on the
+process descriptor such as open files and the file descriptors table.
+Otherwise, system calls such as \emph{read}, \emph{write}, and \emph{close}
+that need such information would fail.
+
+\subsection{Spawning Kernel Threads from User-Space}
+
+Facing the aforementioned challenges lead to the creation of a kind of a hybrid
+solution for spawning kernel threads for \memsc; spawning them from user-space.
+This might sound counter-intuitive at first but it significantly simplifies
+things. It also is consistent with the way shared memory for the \sysp is
+established with the allocation of the memory happening in user-space instead
+of kernel-space. It might actually not be completely accurate to refer to these
+threads as ``kernel threads'' following the ``by the book'' definition of what
+a kernel thread is, but section \ref{section:kermode} explains how these
+threads run almost exclusively in kernel mode.
+
+The \emph{clone()} system call is the mechanism that the Linux kernel offers to
+user processes for creating new threads and processes. That is also what
+library functions such as \emph{fork()} and \emph{pthread\_create()} invoke under
+the hood. As mentioned in the previous section, \emph{clone()} accepts a number
+of flags that allow the caller to control what is shared between the parent and
+the child thread.
+
+From within \lib's \emph{memsc\_register()} library function, \emph{clone()} is
+invoked with the following flags in order to spawn a new \memsc worker thread:
+
+\begin{verbatim}
+int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+                   CLONE_THREAD | CLONE_UNTRACED | 0);
+\end{verbatim}
+
+Setting the CLONE\_VM flag ensures that the resulting thread runs in the same
+address space as the calling thread. CLONE\_THREAD additionally makes sure that
+calling \emph{getpid()} from either thread will return the same value.
+CLONE\_FS makes the two threads share filesystem information such as the root
+directory and the current working directory while CLONE\_FILES makes them share
+the same file descriptor table. Similarly, CLONE\_SIGHAND ensures sharing of
+the signal handlers table. Finally, CLONE\_UNTRACED doesn't allow the resulting
+thread to be traced using the \emph{ptrace} system call. More detailed
+documentation of these flags can be found on \cite{clone}.
+
+The decoupling mechanism has been implemented such as that new threads spawned
+by a decoupled process are not decoupled themselves by default. They instead
+run on the same vCPU as the kernel-side context of the process and they are
+managed by the \llinux scheduler as all normal \llinux threads. That means that
+a \memsc worker does not start as a decoupled thread which is convenient in our
+case because otherwise we would need to migrate the worker back to the \llinux
+core manually.
+
+\subsection{Running in Kernel Mode (Almost) Forever}
+\label{section:kermode}
+
+Once a \memsc worker thread has been created in user-space, it immediately
+issues a \emph{memsc\_register()} system call in order to enter kernel-space
+and be registered as the corresponding worker thread for that user process.
+Since the \memsc mechanism has not been setup at that point, this system call
+needs to be issued in the traditional way using IPC.  However, for a process
+that wants to exclusively use \memsc for forwarding its system calls, this can
+be the first and last system call that is communicated to the \llinux kernel by
+generating an interrupt.
+
+When the worker thread enters kernel mode it stays there forever processing new
+system calls. Worker threads never leave the kernel after entering it, except
+if they enter it with the wrong system call arguments. In case no error
+condition is detected by \emph{memsc\_register()}, a worker thread is only ever
+going to terminate its execution if it receives a fatal signal.
+
+A fatal signal is one that would result in the process being killed.  The
+default action for many signals for which the user process hasn't specified a
+handler is to kill the process. \emph{SIGKILL} and \emph{SIGSEGV} are examples
+of such signals. However, as hinted, the user process could choose to ignore
+those signals or install user-space handlers that perform other actions than
+killing the thread. There is one signal nevertheless, \emph{SIGKILL}, which in
+user-space\footnote{in kernel-space even SIGKILL and SIGSTOP can be blocked}
+cannot be blocked nor caught by a handler.  Thus \emph{SIGKILL} is guaranteed
+to always terminate the process.
+
+Now, in multithreaded environments, a signal that is sent to a process as a
+whole will be delivered to just one thread which is chosen on runtime among the
+threads that are not blocking that signal. However, in the case of a fatal
+signal generated or sent to a multithreaded application, the kernel kills all
+of its threads and not just the thread to which the signal has been delivered
+\cite{bovet}. That means that whenever the user application needs to die for
+any reason, either because it voluntarily called \emph{exit} or a fatal signal
+has been delivered to it, the corresponding \memsc worker thread will die with
+it too.
+
+For example, if another thread of the process generates a page fault by
+illegally trying to access memory that doesn't belong to it, a \emph{SIGSEGV}
+signal will be delivered to the process. Unless a handler has been installed
+for it, the default fatal effect of this signal will be ``propagated'' to all
+threads of the process, including the \memsc worker thread, resulting in their
+termination. This greatly simplifies the kernel-space code of the worker which
+doesn't have to otherwise determine when it would need to cease its execution.
+
+Figure \ref{fig:kernel forever} shows the loop that a \memsc worker thread
+constantly executes until its termination. Initially, the worker sets its state
+to \emph{TASK\_KILLABLE}. \emph{TASK\_KILLABLE} is like
+\emph{TASK\_UNINTERRUPTIBLE} with the difference being that the kernel will
+wake up the thread if there is a fatal signal for it pending (but not any other
+signal). Thus, the thread essentially goes to sleep by updating its state and
+yielding the scheduler using the \emph{schedule()} function.
+
+The thread then can only wake up if some other thread wakes it up or if it
+receives a fatal signal. In the latter case, \emph{signal\_pending()} will
+return true and the worker thread will attempt to return back to user-space.
+Upon returning to user-space the kernel will notice the pending signal and will
+kill the worker thread. In case no fatal signal is pending, the worker
+processes any new system calls it finds in the \sysp and then starts a new loop
+iteration and goes back to sleep.
+
+\begin{figure}[h]
+    \begin{lstlisting}[language=C]
+while (1) {
+	set_current_state(TASK_KILLABLE);
+	schedule();
+
+	if (signal_pending(current))
+		return 0;
+
+	/* process new system calls */
+	...
+}
+    \end{lstlisting}
+    \caption{The loop that a \memsc worker thread constantly executes
+    throughout its lifetime.}
+    \label{fig:kernel forever}
+\end{figure}
+
+It now becomes clear that the amount of time spent by a \memsc worker thread in
+user-space is truly minimal. To be specific, it is only the very few CPU
+instructions that it executes after its creation and before issuing the
+\emph{memsc\_register()} system call which triggers the transition to
+kernel-space. This is why we refer to these threads as kernel threads in this
+document, even if they do not fulfill the conventional definition of a kernel
+thread. The only other time these threads would execute in user-space is if
+\emph{memsc\_register()} failed prematurely, in which case they would return
+back to user-space with an error code.
+
+\section{Polling Memory Non-Stop}
+
+A big question associated with the scanner thread is whether it should be
+constantly polling memory or if it could possibly sleep for short periods of
+time. By constantly polling memory it doesn't allow other threads to be
+scheduled in its vCPU, while by taking breaks it risks reacting too late to new
+system call requests. To answer this question it is important to understand how
+Linux manages time and for how long threads can sleep.
+
+Linux keeps track of time using jiffies, the kernel unit of time. The jiffies
+monotonic counter maintained in the kernel is increased once with every tick of
+the timer. The frequency of the timer is configurable but a typical value is
+100Hz. That means that jiffies is incremented 100 times every second. In a
+system with a 1GHz processor that equals 10 million CPU cycles per jiffy.
+
+Using the \emph{schedule\_timeout()} function threads can voluntarily go to
+sleep until the specified time has elapsed. The scanner thread could
+potentially use this function to sleep for some time between different scans of
+the \sysp{s} in order to not monopolize its vCPU. However, the least amount of
+time a thread can sleep this way is 1 jiffy. And since 1 jiffy equals millions
+of CPU cycles a sleeping scanner thread could stall the progress of decoupled
+threads waiting for their system calls to be completed.
+
+It becomes clear now that in order for \memsc to be fast the scanner thread
+cannot sleep. Instead, it should be polling memory non-stop. In order for this
+to happen it must declare itself as non-preemptible using the
+\emph{preempt\_disable()} function. This way it doesn't allow any other thread
+to be scheduled on its vCPU. On the other hand, hardware interrupts can still
+be delivered there.
+
+The downside of this is that the scanner thread is now monopolizing its vCPU.
+Nothing else can be scheduled there for as long as the scanner is running and
+until it voluntarily quits because there are no more registered \memsc
+processes. That essentially means that \llinux needs to dedicate an entire vCPU
+just for the scanner's execution.
+
+The whole system now needs at least 2 vCPUs in order to function. One for the
+scanner and one for the remaining kernel threads. However, this is necessary in
+order to detect newly posted system calls as fast as possible and is
+compensated by a forwarding mechanism that performs significantly better.
+
+\section{Synchronizing Accesses to the Syspage}
+\label{sec:sync}
+
+Special care needs to be taken when accessing the \sysp. That is because
+different CPU cores, the one executing the decoupled user thread and the ones
+executing the scanner and worker threads, are accessing the same shared
+locations in system memory. The cache coherency protocol of the architecture
+ensures that different CPU cores won't see different values for the same
+address and that writes will eventually propagate to all cores. However, it
+provides us with no ordering guarantees whatsoever.
+
+Memory ordering is very important because sometimes we need to ensure that
+writes to memory become globally visible in a certain order, while in other
+cases stores are not re-ordered before earlier loads. For example, when the
+decoupled thread creates a new system scall entry in the \sysp, an appropriate
+memory barrier needs to ensure that the \emph{status} field is really written
+last. Otherwise, the kernel could mistakenly pick incomplete system call
+entries to execute. Similarly, the kernel needs to make sure that the
+\emph{status} field is updated last when it's done with processing an entry, or
+else the user-space might read an incorrect return value for the system call.
+
+Another example is related to memory polling. Polling is achieved via busy
+waiting or spinning on a specific memory location until we notice a change in
+its content. However, an optimizing compiler, being unaware of the fact that a
+different thread can update that value, will most probably alias the contents
+of the memory location into a CPU register resulting in the variable not be
+reloaded from memory on each iteration. A software barrier (also called
+compiler barrier) is needed to combat this problem by forcing the compiler to
+produce code that really reads the value from memory each time. Fortunately,
+CPU-level memory barriers always imply software barriers.
+
+The Linux kernel internally used to offer only standalone memory barrier
+functions such as \emph{smp\_rmb()}, \emph{smp\_wmb()} and \emph{smp\_mb()}.
+However, at a later point, support for atomic operations with acquire and
+release semantics has been added as well. These operations are on a par with
+the acquire/release semantics introduced by the C11 standard \cite{c11}.
+Acquire and release semantics can often match the underlying CPU architecture
+model better since modern ISAs usually do not offer plain load and store
+barrier instructions \cite{membarriers_paul}. Also, it worths mentioning that
+on some ISAs such as ARMv8, using relaxed operations along with separate
+standalone barriers is less efficient than directly using an atomic operation
+with the appropriate memory model.
+
+The special situation in \memsc is that accesses to shared memory need to be
+synchronized between a user thread and one or more kernel threads. Studying the
+implementation of acquire and release operations in both \llinux and gcc showed
+that the implementations are identical or compatible. Thus in the \memsc
+implementation, \emph{atomic\_load\_explicit(memory\_order\_acquire)}
+operations in user-space are paired with \emph{smp\_store\_release()} in
+kernel-space and respectively
+\emph{atomic\_store\_explicit(memory\_order\_release)} operations in user-space
+are paired with \emph{smp\_load\_acquire()} operations inside the kernel.
+
+\section{Preventing Timing Attacks}
+
+Normally, user and kernel memory contents are isolated. User code is not
+supposed to access kernel memory except in rare cases. One such case is the
+vDSO library where user-space is allowed to (only) read certain kernel memory
+contents.  \memsc is even more exceptional since the \sysp{s} are meant to be
+accessed for reading and writing by both the kernel and the decoupled user
+threads. Special care must be taken in this case in order to avoid introducing
+any security-critical bugs.
+
+All user input corresponding to system call arguments is forwarded by \memsc to
+the system call service routines as is. These routines are supposed to validate
+the user data before doing anything with it. The worst thing that can happen in
+case a user thread starts writing arbitrary data to the \sysp is the generation
+of invalid system call requests that the kernel will reject.
+
+However, another type of attack is possible. Exploiting a race condition type
+of bug called time-of-check to time-of-use. As the name suggests this attack
+works by modifying something (memory contents in this case) between the
+checking of the state of a part of the system and the use of the results of
+that check.
+
+Such a bug could be introduced in \memsc in this way:
+
+\begin{verbatim}
+if (entry->sysno < __NR_syscalls)
+    sys_call_table[entry->sysno](...)
+\end{verbatim}
+
+\memsc, before attempting to execute a system call, needs to verify that the
+given system call number really corresponds to an entry in the system call
+table. If the number is valid, it is used as an index in that table.  What an
+attacker could do in this case is change the value of the system call number in
+the \sysp right after this check and just before it is used for indexing in the
+table. If this attack is successful it can possibly lead to arbitrary code
+execution in the kernel.
+
+To prevent this, \memsc copies the data from the \sysp to the kernel stack
+before using them. This way no data can be changed in an unexpected way.
+
+\section{Modifications to the C Library}
+
+Allowing applications to transparently use \memsc required the modification of
+uClibc-ng, a small-sized C library compatible with glibc. uClibc-ng was chosen
+for its simplicity and its suitability for an embedded environment as the one
+used in the \memsc evaluation. The modified version of this library is
+dynamically linked against \lib on runtime, allowing the latter to be altered
+or replaced without requiring recompilation of the former.
+
+uClibc-ng has a wrapper function for each supported system call. All these
+wrapper functions are automatically generated by the C preprocessor just before
+compilation using 2 parameterized C macros. One of these macros is for system
+calls that can return an error and the other one is for system calls that never
+fail. Modifying these 2 C macros is enough for enabling \memsc for all system
+calls.
+
+The patched libc version inserts a \emph{memsc\_add()} /
+\emph{memsc\_wait\_all()} pair in each system call wrapper. This way, issuing
+any system call makes the calling thread block its execution until the result
+is available. Then the return value of the system call is retrieved using
+\emph{memsc\_retval()} and is forwarded back to the application.
+
+The C library must also take care of the \memsc registration for each process.
+In the case of uClibc-ng, the first function called by the Linux program loader
+is \emph{\_\_uClibc\_main()}. This function performs any necessary
+initialization of the execution environment before passing control to the main
+function of the user program. Inserting the \emph{memsc\_register()} call there
+ensures that \memsc is enabled before any application code is executed.
+
+The process for patching any other C library implementation such as glibc
+should be similar to what described above and should not require big efforts.

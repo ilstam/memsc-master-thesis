@@ -1,0 +1,61 @@
+\chapter{Conclusion and Future Work}
+\label{chap:conclusion}
+
+\section{Conclusion}
+
+This work introduced \memsc, a system call forwarding mechanism. \memsc uses
+shared memory in order to forward system calls from a decoupled \llinux thread
+running on a CPU core, to the \llinux kernel running on a separate core.
+
+With \memsc, the \llinux kernel performs memory polling on a set of special
+memory pages that registered processes use for posting system calls. In
+contrast, the existing forwarding mechanism of \llinux uses standard L4 IPC
+which works by generating inter-processor interrupts in order to achieve this
+cross-processor communication.
+
+\memsc can coexist with the traditional forwarding mechanism and it can be used
+by applications either directly or indirectly. When used indirectly,
+applications simply link against a modified C library version while no
+modification or recompilation of the original program is required. When used
+directly, applications use the \memsc user-space library which further allows
+them to use asynchronous system calls and batching capabilities.
+
+Asynchronous system calls free applications from having to block after issuing
+each and every system call. Instead, they can proceed with doing other work
+after posting a system call and then return to check its result at a later
+point in time. Moreover, by grouping and submitting multiple system calls
+together, applications can further speed up their execution and minimize the
+time they spend being blocked.
+
+The experimental evaluation of \memsc showed that it always performs better
+than the existing \llinux forwarding mechanism. The total system call
+throughput of the system was increased by 256\% while executing a custom
+getppid microbenchmark. General-purpose benchmarks using the dd and ls programs
+saw a performance improvement of 76\% and 43\% correspondingly.
+
+The performance improvement is even more significant when asynchronous system
+calls and batching are used. Specifically, for the same getppid benchmark the
+system call throughput was increased by 1196\% for constantly executing system
+calls in batches of 4, and by 5788\% when using the maximum batch size of 64.
+
+\section{Future Work}
+
+Future work and research should focus on determining how well \memsc scales.
+Unfortunately, the available hardware for conducting the experimental
+evaluation was of limited physical resources. Further tests should be run in an
+environment with a larger amount of CPU cores and multiple decoupled processes
+running in parallel.
+
+Additionally, it is worth investigating parallel execution of system calls.
+Even though \memsc can currently execute system calls of different processes at
+the same time, it cannot execute different system calls of the same process in
+parallel. In order to achieve this, multiple \memsc worker threads per process
+would need to be employed.
+
+Finally, multi-threading support could be added to the user-space \lib library.
+Achieving this should not be too complicated. In particular, the
+\emph{memsc\_add()} function is the only one not being thread-safe currently.
+This could be fixed by introducing a single lock in user-space to protect the
+\sysp from concurrent insertions of new entries. The challenging part would be
+implementing proper thread cancellation and ensuring that no unneeded entries
+are left behind.

@@ -1,0 +1,186 @@
+@book{ldd,
+    author        = {Jonathan Corbet and Alessandro Rubini and Greg Kroah-Hartman},
+    title         = {Linux Device Drivers},
+    year          = {2005},
+    publisher     = {O'Reilly Media},
+    edition       = {3},
+    chapter       = {15}
+}
+
+@article{flexsc,
+    author        = {Livio Soares and Michael Stumm},
+    title         = {FlexSC: Flexible System Call Scheduling with Exception-Less System Calls},
+    journaltitle  = {Proceedings of the 9th USENIX conference on Operating systems design and implementation},
+    year          = {2010}
+}
+
+@inproceedings{decoupling,
+    author = {Lackorzynski, Adam and Weinhold, Carsten and Härtig, Hermann},
+    year = {2016},
+    month = {06},
+    pages = {1-8},
+    title = {Decoupled: Low-Effort Noise-Free Execution on Commodity Systems},
+    doi = {10.1145/2931088.2931095}
+}
+
+@article{vcpus,
+    author = {Lackorzynski, Adam and Warg, Alexander and Peter, Michael},
+    title = {Generic Virtualization with Virtual Processors},
+    year = {2010},
+    journaltitle  = {Proceedings of Twelfth Real-Time Linux Workshop},
+}
+
+@techreport{membarriers_paul,
+     title = {Memory Barriers: a Hardware View for Software Hackers},
+     author = {Paul E. McKenney},
+     institution = {Linux Technology Center, IBM Beaverton},
+     month = {07},
+     year = {2010},
+}
+
+@online{membarriers_linux,
+    title         = {Linux Kernel Memory Barriers},
+    note          = {Part of linux-5.6.15 documentation. File: Documentation/memory-barriers.txt},
+}
+
+@inproceedings{os_noise1,
+    author ={S. {Seelam} and L. {Fong} and A. {Tantawi} and J. {Lewars} and J. {Divirgilio} and K. {Gildea}},
+    booktitle = {2010 IEEE International Symposium on Parallel Distributed Processing (IPDPS)},
+    title = {Extreme scale computing: Modeling the impact of system noise in multicore clustered systems},
+    year = {2010},
+}
+
+@inproceedings{os_noise2,
+    author={S. {Seelam} and L. {Fong} and J. {Lewars} and J. {Divirgilio} and B. F. {Veale} and K. {Gildea}},
+    booktitle={2011 IEEE International Parallel   Distributed Processing Symposium},
+    title={Characterization of System Services and Their Performance Impact in Multi-core Nodes},
+    year={2011},
+}
+
+@online{os_noise3,
+    author  = {Mati Karner},
+    title   = {Understanding noise introduced by operating systems and its effects on high performance computing},
+    institution = {Department of Computer Science, University of Tartu},
+    url     = {https://pdfs.semanticscholar.org/64f8/bf2735d7ab4da08470e364ed5f41b08d7b68.pdf},
+}
+
+@techreport{dedicated_cpus,
+    author      = {Josh Triplett and Philip W. Howard and Eric Wheeler and Jonathan Walpole},
+    title       = {Avoiding system call overhead via dedicated user and kernel CPUs},
+    institution = {Portland State University},
+    url         = {http://web.cecs.pdx.edu/~walpole/papers/osdi2010paper.pdf},
+}
+
+@book{love,
+    author = {Love, Robert},
+    title = {Linux Kernel Development},
+    year = {2010},
+    isbn = {0672329468},
+    publisher = {Addison-Wesley Professional},
+    edition = {3rd}
+}
+
+@book{bovet,
+    author = {Bovet, Daniel and Cesati, Marco},
+    title = {Understanding The Linux Kernel},
+    year = {2005},
+    isbn = {0596005652},
+    publisher = {Oreilly \& Associates Inc}
+}
+
+@article{mail_list,
+    title         = {kernel\_thread() causes segfault},
+    note          = {Discussion thread from the Linux kernel newbies mailing list},
+    url           = {https://www.spinics.net/lists/newbies/msg57445.html},
+    year          = {2016},
+}
+
+@online{clone,
+    title         = {clone(2) manual - version 5.07 of the Linux man-pages project}
+}
+
+@online{vdso,
+    title         = {vdso(7) manual - version 5.07 of the Linux man-pages project}
+}
+
+@online{c11,
+    title         = {C11 - Atomic operations library},
+    url           = {https://en.cppreference.com/w/c/atomic},
+}
+
+@inproceedings{clustering,
+  title={System Call Clustering: A Profile-Directed Optimization Technique},
+  author={M. Rajagopalan and Saumya K. Debray and Matti A. Hiltunen and Richard D. Schlichting},
+  year={2005}
+}
+
+@article{cassyopia,
+    author = {Rajagopalan, Mohan and Debray, Saumya and Hiltunen, Matti and Schlichting, Richard},
+    year = {2003},
+    journaltitle = {Proceedings of the 9th conference on Hot Topics in Operating Systems (HotOS)},
+    title = {Cassyopia: Compiler Assisted System Optimization.}
+}
+
+@article{compositecalls,
+    author = {Ballesteros, Francisco and Jimenez-Peris, Ricardo and Patiño-Martínez, Marta and Kon, Fabio and Arévalo, Sergio and Campbell, Roy},
+    year = {2000},
+    month = {05},
+    title = {Using interpreted CompositeCalls to improve operating system services},
+    pages = {589-615},
+    volume = {30},
+    journal = {Softw., Pract. Exper.},
+    doi = {10.1002/(SICI)1097-024X(200005)30:63.3.CO;2-B}
+}
+
+@inproceedings{compositecalls2,
+  title = {Improving Application Performance Through System Call Composition},
+  author = {Amit Purohit and Joseph Spadavecchia and Charles P. Wright and Erez Zadok},
+  year = {2003}
+}
+
+@inproceedings{l4,
+  author = {Liedtke, J.},
+  title = {On Micro-Kernel Construction},
+  year = {1995},
+  publisher = {Association for Computing Machinery},
+  address = {New York, NY, USA},
+  booktitle = {Proceedings of the Fifteenth ACM Symposium on Operating Systems Principles},
+  pages = {237–250},
+  numpages = {14},
+  location = {Copper Mountain, Colorado, USA},
+  series = {SOSP ’95}
+}
+
+@online{fiasco,
+    title   = {The Fiasco microkernel},
+    url     = {http://os.inf.tu-dresden.de/fiasco/},
+}
+
+@mastersthesis{l4linux,
+    author        = {Adam Lackorzynski},
+    title         = {\llinux on L4Env},
+    school        = {Technical University of Dresden},
+    year          = {2002},
+}
+
+@inproceedings{l4_performance,
+  author = {H\"{a}rtig, Hermann and Hohmuth, Michael and Liedtke, Jochen and Sch\"{o}nberg, Sebastian and Wolter, Jean},
+  title = {The Performance of $\mu$-Kernel-Based Systems},
+  year = {1997},
+  publisher = {Association for Computing Machinery},
+  booktitle = {Proceedings of the Sixteenth ACM Symposium on Operating Systems Principles},
+  pages = {66–77},
+  numpages = {12},
+  location = {Saint Malo, France},
+  series = {SOSP ’97}
+}
+
+@online{buildroot,
+    title  = {Buildroot},
+    url    = {https://buildroot.org},
+}
+
+@online{busybox,
+    title  = {Busybox},
+    url    = {https://www.busybox.net/},
+}

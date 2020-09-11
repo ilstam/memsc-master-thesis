@@ -1,0 +1,52 @@
+\chapter{Introduction}
+
+System calls are the standard way through which user programs request services
+from the operating system. Every time an application needs to write to disk,
+send a network packet or obtain system information it needs to ask the
+operating system to do it on its behalf. While this segregation of duties is
+essential for security reasons, it also incurs performance overhead. This
+overhead can vary depending on different factors such as the underlying
+architecture, the system configuration, and whether or not the operating system
+runs in a virtualized environment.
+
+A great deal of research for finding ways to minimize system call related
+overhead has been done already over the years
+\cite{clustering}\cite{compositecalls}\cite{cassyopia}\cite{compositecalls2}.
+Even though most research has been focused on system call batching techniques,
+a previous study \cite{dedicated_cpus} from the Portland State University
+claims to have achieved performance improvements by using dedicated user and
+kernel CPUs. This study however was not performed in the context of a
+virtualized operating system.
+
+Recently, for different reasons, the para-virtualized \llinux kernel has
+introduced an execution mode called ``decoupling" \cite{decoupling}. This mode
+allows user threads to run isolated on dedicated CPU cores others than the ones
+used for executing the \llinux kernel. In this case, it has resulted in reduced
+system call performance for decoupled applications. Finding ways to minimize
+this additional overhead is essential for allowing applications issuing large
+amounts of system calls to run as decoupled threads.
+
+\section{Thesis Objectives}
+
+The main objective of this thesis is to design and implement a forwarding
+mechanism that allows user threads bound to a certain CPU core to invoke system
+calls on a Linux kernel running on a different core. The new method must be
+faster than the slow existing mechanism. Existing Linux programs should be able
+to use the new mechanism without requiring any modification to their source
+code.
+
+A secondary objective is to investigate the potential performance improvements
+achieved using an asynchronous system call execution model and provide new
+software applications with a way to use it.
+
+\section{Document Structure}
+
+This document is organized as follows. Chapter \ref{chap:fundamentals} provides
+the reader with the necessary background for understanding the following
+chapters and discusses related work. Chapter \ref{chap:design} introduces the
+new forwarding mechanism and presents its overall architecture and main design
+points. Chapter \ref{chap:implementation} discusses a few interesting
+implementation aspects of the new mechanism. Chapter \ref{chap:evaluation}
+presents the results obtained through the experimental evaluation of this work.
+Finally, Chapter \ref{chap:conclusion} concludes the thesis and proposes future
+work directions.

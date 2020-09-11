@@ -1,0 +1,26 @@
+\chapter*{\centering Abstract}
+
+The L4Re microkernel has long been able to function as a hypervisor and host a
+slightly modified Linux kernel version called \llinux. Recently, \llinux
+introduced a new mode of operation which allows application threads of Linux
+programs to decouple themselves from the Linux scheduler. These threads can
+then run uninterrupted on dedicated CPU cores managed by the L4Re microkernel
+while \llinux keeps running on a separate core. When decoupled threads need to
+request Linux services using system calls, these requests have to be forwarded
+from the CPU cores hosting the decoupled threads to the one hosting \llinux.
+This forwarding requires expensive cross-processor communication which involves
+the microkernel and uses inter-processor interrupts that cause high latency.
+
+This thesis introduces \memsc, a new system call forwarding mechanism
+implemented in the \llinux kernel. Memsc works by having \llinux perform memory
+polling on a set of special shared memory pages that registered processes use
+for posting system call entries, instead of passing system call arguments via
+CPU registers. Involvement of the L4Re microkernel is not required at any step
+in this process. With the help of a modified C library, applications can use
+\memsc transparently without requiring modification or recompilation. New
+applications willing to use the user-space API directly can further benefit
+from additional capabilities such as an asynchronous system call execution
+model. The experimental evaluation of \memsc, conducted using both custom
+microbenchmarks and general-purpose file system benchmarks, shows that it
+performs significantly better than the existing \llinux system call forwarding
+mechanism.
